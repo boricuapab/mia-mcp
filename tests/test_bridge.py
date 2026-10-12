@@ -226,6 +226,7 @@ async def test_mcp_stdio():
                 check("MCP lists modeling tools", {"create_object", "get_attribute", "set_attribute", "select_objects", "frame_objects", "create_curve", "create_material", "organize_objects", "mesh_operation"} <= tools)
                 check("MCP lists rigging tools", {"get_joint_info", "create_joint_chain", "create_constraint", "create_ik_handle", "get_skin_info", "get_skin_weights", "bind_skin"} <= tools)
                 check("MCP lists animation tools", {"get_timeline", "set_timeline", "set_keyframes", "get_animation_curve", "delete_keyframes", "set_key_tangents", "set_curve_infinity", "bake_animation"} <= tools)
+                check("MCP lists character animation tools", {"get_animation_layer", "create_animation_layer", "edit_animation_layer", "capture_pose", "apply_pose", "get_blend_shape_info", "set_blend_shape_weights", "create_character_set", "get_character_set"} <= tools)
                 check("MCP lists tools", {"get_scene_info", "execute_python", "undo", "get_viewport_screenshot", "get_mesh_info", "get_mesh_vertices", "get_closest_point", "list_attributes", "get_connections", "get_api_help", "set_transform"} <= tools)
                 res = await session.call_tool("execute_python", {"code": "1 + 1"})
                 check("MCP execute_python round trip", not is_err(res) and '"2"' in res.content[0].text)
@@ -244,6 +245,8 @@ async def test_mcp_stdio():
                 check("read-only retains rigging inspection", {"get_joint_info", "get_skin_info", "get_skin_weights"} <= tools)
                 check("read-only hides animation edits", not {"set_timeline", "set_keyframes", "delete_keyframes", "set_key_tangents", "set_curve_infinity", "bake_animation"} & tools)
                 check("read-only retains animation inspection", {"get_timeline", "get_animation_curve"} <= tools)
+                check("read-only hides character edits", not {"create_animation_layer", "edit_animation_layer", "apply_pose", "set_blend_shape_weights", "create_character_set"} & tools)
+                check("read-only retains character inspection", {"get_animation_layer", "capture_pose", "get_blend_shape_info", "get_character_set"} <= tools)
                 check("read-only retains mesh inspection", {"get_mesh_info", "get_closest_point"} <= tools)
     finally:
         server.stop()

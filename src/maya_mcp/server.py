@@ -32,6 +32,8 @@ Workflow tips:
   create_constraint, create_ik_handle and bind_skin for undoable rig construction.
 - Use get_timeline/get_animation_curve for animation inspection. Animation edits require
   explicit attributes; frame numbers use the scene time unit. Bake explicit channels to keys.
+- Use character sets and layers to organize control channels. capture_pose returns reusable
+  JSON for apply_pose; set_keyframes accepts an explicit layer.
 """
 
 mcp = _Server("maya", instructions=INSTRUCTIONS)
@@ -162,7 +164,57 @@ def get_animation_curve(curve: str, start: int = 0, limit: int = 200) -> str:
     return _fmt(send_command("get_animation_curve", {"curve": curve, "start": start, "limit": limit}))
 
 
+@mcp.tool()
+def get_animation_layer(layer: str) -> str:
+    """Inspect animation layer weight, mute/solo/lock, hierarchy, channels and curves."""
+    return _fmt(send_command("get_animation_layer", {"layer": layer}))
+
+
+@mcp.tool()
+def capture_pose(names: list[str], attributes: list[str] | None = None) -> str:
+    """Capture scalar control values and scene units as reusable JSON. Defaults to keyable scalar channels; up to 2000 channels."""
+    return _fmt(send_command("capture_pose", {"names": names, "attributes": attributes}))
+
+
+@mcp.tool()
+def get_blend_shape_info(blend_shape: str, limit: int = 200) -> str:
+    """Inspect blendShape geometry and target indices, aliases and current weights. limit 1–5000."""
+    return _fmt(send_command("get_blend_shape_info", {"blend_shape": blend_shape, "limit": limit}))
+
+
+@mcp.tool()
+def get_character_set(character: str, limit: int = 200) -> str:
+    """Read members of an existing Maya character set (not a HumanIK definition). limit 1–5000."""
+    return _fmt(send_command("get_character_set", {"character": character, "limit": limit}))
+
+
 if not READ_ONLY:
+
+    @mcp.tool()
+    def create_animation_layer(layer: str, name: str, attributes: list[str], override: bool = False) -> str:
+        """Create a new additive/override layer containing explicit attributes on a control. Existing layer names are rejected."""
+        return _fmt(send_command("create_animation_layer", {"layer": layer, "name": name, "attributes": attributes, "override": override}))
+
+    @mcp.tool()
+    def edit_animation_layer(layer: str, weight: float | None = None, mute: bool | None = None,
+                             solo: bool | None = None, lock: bool | None = None) -> str:
+        """Change layer weight (0–1), mute, solo or lock in one undo chunk."""
+        return _fmt(send_command("edit_animation_layer", {"layer": layer, "weight": weight, "mute": mute, "solo": solo, "lock": lock}))
+
+    @mcp.tool()
+    def apply_pose(pose: dict) -> str:
+        """Apply JSON returned by capture_pose. Validates units, channel types and settable state before editing. Does not create keys."""
+        return _fmt(send_command("apply_pose", {"pose": pose}))
+
+    @mcp.tool()
+    def set_blend_shape_weights(blend_shape: str, weights: dict[str, float]) -> str:
+        """Set existing unconnected target weights (0–1), keyed by numeric index strings, e.g. {'0': 0.5}. Does not create targets or keys."""
+        return _fmt(send_command("set_blend_shape_weights", {"blend_shape": blend_shape, "weights": weights}))
+
+    @mcp.tool()
+    def create_character_set(character: str, name: str, attributes: list[str]) -> str:
+        """Create a Maya character set from explicit control attributes. name identifies the control; character is the new set name."""
+        return _fmt(send_command("create_character_set", {"character": character, "name": name, "attributes": attributes}))
 
     @mcp.tool()
     def set_timeline(current_time: float | None = None, start: float | None = None, end: float | None = None) -> str:
@@ -170,9 +222,9 @@ if not READ_ONLY:
         return _fmt(send_command("set_timeline", {"current_time": current_time, "start": start, "end": end}))
 
     @mcp.tool()
-    def set_keyframes(name: str, attributes: list[str], times: list[float], value: float | None = None, breakdown: bool = False) -> str:
-        """Key 1–60 explicit scalar channels at 1–200 frame times. Optional value requires one channel; otherwise key current channel values."""
-        return _fmt(send_command("set_keyframes", {"name": name, "attributes": attributes, "times": times, "value": value, "breakdown": breakdown}))
+    def set_keyframes(name: str, attributes: list[str], times: list[float], value: float | None = None, breakdown: bool = False, layer: str = "") -> str:
+        """Key 1–60 scalar channels at 1–200 times. Optional value requires one channel. Optional layer must contain all channels and be unlocked."""
+        return _fmt(send_command("set_keyframes", {"name": name, "attributes": attributes, "times": times, "value": value, "breakdown": breakdown, "layer": layer}))
 
     @mcp.tool()
     def delete_keyframes(name: str, attributes: list[str], start: float, end: float) -> str:

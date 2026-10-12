@@ -49,8 +49,9 @@ use Maya command units, such as the scene distance and angular units.
 Tangents support auto, linear, flat, spline, clamped and plateau; outgoing tangents also
 support step and stepnext. Infinity modes are constant, linear, cycle, cycleRelative
 and oscillate. These edit existing animated channels; they do not create keys by themselves.
-Range edits target objects explicitly rather than selected keys. Layered animation follows
-Maya's command behavior; this release does not provide animation-layer selection.
+Range edits target objects explicitly rather than selected keys. Layered range edits follow
+Maya's command behavior. `set_keyframes` now accepts an optional `layer` parameter;
+see [character animation](character-animation.md) for membership checks and layer controls.
 
 Curve inspection uses API 2.0. Time inputs are converted to scene frame units; unitless
 inputs remain numbers. Output values use API internal units (radians for angles,

@@ -45,7 +45,7 @@ import maya.cmds as cmds
 import maya.mel as mel
 import maya.utils
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9877
@@ -876,6 +876,14 @@ def handle_set_keyframes(params):
         raise CommandError("Provide 1–200 times")
     times = [_finite(t, "time") for t in times]
     options = {"time": times, "breakdown": params.get("breakdown", False)}
+    if params.get("layer"):
+        layer = _typed_node(params["layer"], "animLayer")
+        if cmds.animLayer(layer, query=True, lock=True):
+            raise CommandError("Animation layer is locked")
+        members = {_canonical_plug(p) for p in (cmds.animLayer(layer, query=True, attribute=True) or [])}
+        if any(_canonical_plug(p) not in members for p in plugs):
+            raise CommandError("All keyed attributes must already belong to the requested layer")
+        options["animLayer"] = layer
     if params.get("value") is not None:
         if len(plugs) != 1:
             raise CommandError("An explicit value requires exactly one attribute")
@@ -969,7 +977,175 @@ def handle_bake_animation(params):
     return {"channels_baked": count, "plugs": plugs, "time_range": list(time), "sample_by": step}
 
 
+def _typed_node(name, kind):
+    node = _require_node(name)
+    if cmds.nodeType(node) != kind:
+        raise CommandError("Expected a " + kind + " node")
+    return node
+
+
+def _canonical_plug(plug):
+    # Layer membership may use short node names; resolve both sides before comparison.
+    node, attribute = plug.split(".", 1)
+    full = _require_node(node)
+    return full + "." + cmds.attributeName(full + "." + attribute, long=True, leaf=False)
+
+
+def handle_get_animation_layer(params):
+    layer = _typed_node(params.get("layer"), "animLayer")
+    result = {"layer": layer}
+    for flag in ("weight", "mute", "solo", "lock", "override", "parent", "children", "attribute", "animCurves"):
+        result[flag] = cmds.animLayer(layer, query=True, **{flag: True})
+    return result
+
+
+def handle_create_animation_layer(params):
+    plugs = _animation_plugs(params)
+    name = params.get("layer")
+    if not isinstance(name, str) or not name or cmds.objExists(name):
+        raise CommandError("Provide a new non-empty layer name")
+    with _edit_chunk("create_animation_layer"):
+        layer = cmds.animLayer(name, override=params.get("override", False))
+        cmds.animLayer(layer, edit=True, attribute=plugs)
+    return {"layer": layer, "attributes": plugs}
+
+
+def handle_edit_animation_layer(params):
+    layer = _typed_node(params.get("layer"), "animLayer")
+    options = {}
+    for flag in ("mute", "solo", "lock"):
+        if params.get(flag) is not None:
+            if not isinstance(params[flag], bool):
+                raise CommandError(flag + " must be boolean")
+            options[flag] = params[flag]
+    if params.get("weight") is not None:
+        weight = _finite(params["weight"], "weight")
+        if not 0 <= weight <= 1:
+            raise CommandError("weight must be between 0 and 1")
+        options["weight"] = weight
+    if not options:
+        raise CommandError("Provide weight, mute, solo or lock")
+    with _edit_chunk("edit_animation_layer"):
+        cmds.animLayer(layer, edit=True, **options)
+    return {"layer": layer, "applied": options}
+
+
+_POSE_TYPES = {"bool", "byte", "short", "long", "enum", "float", "double", "doubleLinear", "doubleAngle", "time"}
+
+
+def handle_capture_pose(params):
+    nodes = _nodes(params)
+    attributes = params.get("attributes")
+    channels = []
+    for node in nodes:
+        attrs = attributes if attributes is not None else (cmds.listAttr(node, keyable=True, scalar=True) or [])
+        if not isinstance(attrs, list) or len(attrs) > 60:
+            raise CommandError("At most 60 attributes per node; specify attributes for larger controls")
+        for attr in attrs:
+            plug = _plug({"name": node, "attribute": attr})
+            kind = cmds.getAttr(plug, type=True)
+            if kind in _POSE_TYPES:
+                channels.append({"name": node, "attribute": attr, "type": kind, "value": cmds.getAttr(plug)})
+    if len(channels) > 2000:
+        raise CommandError("Pose exceeds 2000 channels; reduce nodes/attributes")
+    return {"linear_unit": cmds.currentUnit(query=True, linear=True),
+            "angular_unit": cmds.currentUnit(query=True, angle=True),
+            "time_unit": cmds.currentUnit(query=True, time=True), "channels": channels}
+
+
+def handle_apply_pose(params):
+    pose = params.get("pose")
+    if not isinstance(pose, dict) or not isinstance(pose.get("channels"), list) or not 1 <= len(pose["channels"]) <= 2000:
+        raise CommandError("Provide a captured pose with 1–2000 channels")
+    for key, flag in (("linear_unit", "linear"), ("angular_unit", "angle"), ("time_unit", "time")):
+        if pose.get(key) != cmds.currentUnit(query=True, **{flag: True}):
+            raise CommandError("Pose units differ from scene units: " + key)
+    validated, seen = [], set()
+    for entry in pose["channels"]:
+        if not isinstance(entry, dict):
+            raise CommandError("Invalid pose channel")
+        plug = _plug(entry)
+        kind = cmds.getAttr(plug, type=True)
+        if kind not in _POSE_TYPES or kind != entry.get("type") or not cmds.getAttr(plug, settable=True):
+            raise CommandError("Pose channel is incompatible, locked or connected: " + plug)
+        value = _finite(entry.get("value"), "pose value") if kind != "bool" else entry.get("value")
+        if kind == "bool" and (not isinstance(value, (bool, int)) or value not in (0, 1)):
+            raise CommandError("Invalid boolean pose value")
+        if kind in ("byte", "short", "long", "enum") and int(value) != value:
+            raise CommandError("Pose integer channel requires an integer")
+        if plug in seen:
+            raise CommandError("Duplicate pose channel: " + plug)
+        seen.add(plug)
+        validated.append((plug, value))
+    with _edit_chunk("apply_pose"):
+        for plug, value in validated:
+            cmds.setAttr(plug, value)
+    return {"applied_channels": len(validated)}
+
+
+def handle_get_blend_shape_info(params):
+    node = _typed_node(params.get("blend_shape"), "blendShape")
+    limit = _limit(params)
+    indices = cmds.getAttr(node + ".weight", multiIndices=True) or []
+    aliases = cmds.aliasAttr(node, query=True) or []
+    mapping = {aliases[i + 1]: aliases[i] for i in range(0, len(aliases), 2)}
+    return {"blend_shape": node, "total_targets": len(indices),
+            "geometry": cmds.blendShape(node, query=True, geometry=True) or [],
+            "targets": [{"index": i, "alias": mapping.get("weight[{}]".format(i)),
+                         "weight": cmds.getAttr(node + ".weight[{}]".format(i))} for i in indices[:limit]]}
+
+
+def handle_set_blend_shape_weights(params):
+    node = _typed_node(params.get("blend_shape"), "blendShape")
+    weights = params.get("weights")
+    if not isinstance(weights, dict) or not 1 <= len(weights) <= 200:
+        raise CommandError("Provide 1–200 weights keyed by numeric target index")
+    indices = set(cmds.getAttr(node + ".weight", multiIndices=True) or [])
+    validated = []
+    for key, value in weights.items():
+        if not isinstance(key, str) or not key.isdecimal() or int(key) not in indices:
+            raise CommandError("Unknown blend shape target index: " + str(key))
+        value = _finite(value, "weight")
+        if not 0 <= value <= 1:
+            raise CommandError("Blend shape weight must be between 0 and 1")
+        plug = node + ".weight[{}]".format(int(key))
+        if not cmds.getAttr(plug, settable=True):
+            raise CommandError("Target weight is locked or connected: " + plug)
+        if any(p == plug for p, _ in validated):
+            raise CommandError("Duplicate target index")
+        validated.append((plug, value))
+    with _edit_chunk("blend_shape_weights"):
+        for plug, value in validated:
+            cmds.setAttr(plug, value)
+    return {"blend_shape": node, "weights": weights}
+
+
+def handle_create_character_set(params):
+    plugs = _animation_plugs(params)
+    name = params.get("character")
+    if not isinstance(name, str) or not name or cmds.objExists(name):
+        raise CommandError("Provide a new non-empty character set name")
+    with _edit_chunk("character_set"):
+        result = cmds.character(plugs, name=name)
+    return {"character": result, "attributes": plugs}
+
+
+def handle_get_character_set(params):
+    node = _typed_node(params.get("character"), "character")
+    members = cmds.character(node, query=True) or []
+    return {"character": node, "total_members": len(members), "members": members[:_limit(params)]}
+
+
 HANDLERS = {
+    "get_animation_layer": handle_get_animation_layer,
+    "create_animation_layer": handle_create_animation_layer,
+    "edit_animation_layer": handle_edit_animation_layer,
+    "capture_pose": handle_capture_pose,
+    "apply_pose": handle_apply_pose,
+    "get_blend_shape_info": handle_get_blend_shape_info,
+    "set_blend_shape_weights": handle_set_blend_shape_weights,
+    "create_character_set": handle_create_character_set,
+    "get_character_set": handle_get_character_set,
     "get_timeline": handle_get_timeline,
     "set_timeline": handle_set_timeline,
     "set_keyframes": handle_set_keyframes,
