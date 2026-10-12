@@ -2,6 +2,8 @@
 
 [Back to README](../README.md)
 
+See [rigging tools](rigging.md) for joints, constraints, inverse kinematics, and skinning.
+
 ## Inspection, API, and execution tools
 
 | Tool | What it does |

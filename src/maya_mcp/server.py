@@ -28,6 +28,8 @@ Workflow tips:
 - Use create_object/create_curve/create_material for scene building; organize_objects for hierarchy.
 - Prefer set_attribute/set_transform and mesh_operation for supported edits; each is undoable.
 - Use select_objects to manage selection and frame_objects to fit a viewport camera.
+- Use get_joint_info/get_skin_info/get_skin_weights to inspect rigs; create_joint_chain,
+  create_constraint, create_ik_handle and bind_skin for undoable rig construction.
 """
 
 mcp = _Server("maya", instructions=INSTRUCTIONS)
@@ -128,7 +130,45 @@ def get_attribute(name: str, attribute: str) -> str:
     return _fmt(send_command("get_attribute", {"name": name, "attribute": attribute}))
 
 
+@mcp.tool()
+def get_joint_info(name: str) -> str:
+    """Inspect joint hierarchy, world position, orientation, rotation order and radius."""
+    return _fmt(send_command("get_joint_info", {"name": name}))
+
+
+@mcp.tool()
+def get_skin_info(skin_cluster: str) -> str:
+    """Inspect skin geometry, influence full paths/logical indices, skinning and normalization modes."""
+    return _fmt(send_command("get_skin_info", {"skin_cluster": skin_cluster}))
+
+
+@mcp.tool()
+def get_skin_weights(skin_cluster: str, start: int = 0, limit: int = 20) -> str:
+    """Read polygon vertex weights via API 2.0 in returned influence order. limit 1–200; at most 20000 weight values."""
+    return _fmt(send_command("get_skin_weights", {"skin_cluster": skin_cluster, "start": start, "limit": limit}))
+
+
 if not READ_ONLY:
+
+    @mcp.tool()
+    def create_joint_chain(positions: list[list[float]], names: list[str] = [], parent: str = "", radius: float = 1) -> str:
+        """Create 1–200 joints at world XYZ positions, optionally under a joint. Restores selection; orientation remains at defaults."""
+        return _fmt(send_command("create_joint_chain", {"positions": positions, "names": names, "parent": parent, "radius": radius}))
+
+    @mcp.tool()
+    def create_constraint(targets: list[str], driven: str, kind: str = "parent", maintain_offset: bool = True, name: str = "") -> str:
+        """Create parent/point/orient/scale/pole_vector constraints. Pole vector requires IK handle and ignores maintain_offset."""
+        return _fmt(send_command("create_constraint", {"targets": targets, "driven": driven, "kind": kind, "maintain_offset": maintain_offset, "name": name}))
+
+    @mcp.tool()
+    def create_ik_handle(start_joint: str, end_joint: str, solver: str = "ikRPsolver", name: str = "") -> str:
+        """Create RP or SC inverse kinematics. End joint must descend from start joint."""
+        return _fmt(send_command("create_ik_handle", {"start_joint": start_joint, "end_joint": end_joint, "solver": solver, "name": name}))
+
+    @mcp.tool()
+    def bind_skin(mesh: str, joints: list[str], max_influences: int = 4, skinning_method: int = 0, name: str = "") -> str:
+        """Bind an unskinned polygon mesh to explicit joints. Method 0 linear/1 dual quaternion/2 blended; max influences 1–20."""
+        return _fmt(send_command("bind_skin", {"mesh": mesh, "joints": joints, "max_influences": max_influences, "skinning_method": skinning_method, "name": name}))
 
     @mcp.tool()
     def create_object(kind: str = "cube", name: str = "", size: float = 1,

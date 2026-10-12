@@ -45,7 +45,7 @@ import maya.cmds as cmds
 import maya.mel as mel
 import maya.utils
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9877
@@ -660,7 +660,174 @@ def handle_mesh_operation(params):
     return {"operation": operation, "result": result}
 
 
+def _joint(name):
+    node = _require_node(name)
+    if cmds.nodeType(node) != "joint":
+        raise CommandError("Expected a joint: " + node)
+    return node
+
+
+def handle_get_joint_info(params):
+    node = _joint(params.get("name"))
+    return {"name": node, "parent": cmds.listRelatives(node, parent=True, fullPath=True) or [],
+            "children": cmds.listRelatives(node, children=True, type="joint", fullPath=True) or [],
+            "world_position": cmds.xform(node, query=True, worldSpace=True, translation=True),
+            "joint_orient": cmds.getAttr(node + ".jointOrient"),
+            "rotation_order": cmds.getAttr(node + ".rotateOrder"),
+            "radius": cmds.getAttr(node + ".radius")}
+
+
+def handle_create_joint_chain(params):
+    positions = params.get("positions")
+    if not isinstance(positions, list) or not 1 <= len(positions) <= 200:
+        raise CommandError("Provide 1–200 world-space positions")
+    positions = [_vector(p) for p in positions]
+    names = params.get("names") or []
+    if not isinstance(names, list) or (names and (len(names) != len(positions) or any(not isinstance(n, str) or not n for n in names))):
+        raise CommandError("names must contain one non-empty name per position")
+    radius = _positive(params.get("radius", 1), "radius")
+    parent = _joint(params["parent"]) if params.get("parent") else None
+    previous_selection = cmds.ls(selection=True, long=True) or []
+    joints = []
+    with _edit_chunk("joint_chain"):
+        try:
+            cmds.select(clear=True)
+            for i, position in enumerate(positions):
+                # Explicit parenting avoids Maya joint()'s implicit selection parenting.
+                node = cmds.createNode("joint", **({"name": names[i]} if names else {}),
+                                       **({"parent": parent} if parent else {}))
+                node = _require_node(node)
+                cmds.xform(node, worldSpace=True, translation=position)
+                cmds.setAttr(node + ".radius", radius)
+                joints.append(node)
+                parent = node
+        finally:
+            cmds.select(previous_selection, replace=True) if previous_selection else cmds.select(clear=True)
+    return {"joints": joints}
+
+
+def handle_create_constraint(params):
+    kind = params.get("kind", "parent")
+    commands = {"parent": "parentConstraint", "point": "pointConstraint", "orient": "orientConstraint",
+                "scale": "scaleConstraint", "pole_vector": "poleVectorConstraint"}
+    if kind not in commands:
+        raise CommandError("kind must be parent, point, orient, scale or pole_vector")
+    targets = _nodes({"names": params.get("targets")})
+    driven = _require_node(params.get("driven"))
+    if driven in targets:
+        raise CommandError("Driven node cannot also be a target")
+    if kind == "pole_vector":
+        if cmds.nodeType(driven) != "ikHandle":
+            raise CommandError("pole_vector requires an IK handle")
+    elif not cmds.objectType(driven, isAType="transform"):
+        raise CommandError("Driven node must be a transform")
+    if any(not cmds.objectType(n, isAType="transform") for n in targets):
+        raise CommandError("Targets must be transforms")
+    options = {} if kind == "pole_vector" else {"maintainOffset": params.get("maintain_offset", True)}
+    if params.get("name"):
+        options["name"] = params["name"]
+    with _edit_chunk("constraint"):
+        result = getattr(cmds, commands[kind])(targets, driven, **options)
+    return {"kind": kind, "constraints": result, "targets": targets, "driven": driven}
+
+
+def handle_create_ik_handle(params):
+    start = _joint(params.get("start_joint"))
+    end = _joint(params.get("end_joint"))
+    solver = params.get("solver", "ikRPsolver")
+    if solver not in ("ikRPsolver", "ikSCsolver"):
+        raise CommandError("solver must be ikRPsolver or ikSCsolver")
+    descendants = cmds.listRelatives(start, allDescendents=True, fullPath=True, type="joint") or []
+    if start == end or end not in descendants:
+        raise CommandError("end_joint must be a descendant of start_joint")
+    options = {"startJoint": start, "endEffector": end, "solver": solver}
+    if params.get("name"):
+        options["name"] = params["name"]
+    with _edit_chunk("ik_handle"):
+        result = cmds.ikHandle(**options)
+    return {"handle": result[0], "effector": result[1], "solver": solver}
+
+
+def _skin(params):
+    node = _require_node(params.get("skin_cluster"))
+    if cmds.nodeType(node) != "skinCluster":
+        raise CommandError("Expected a skinCluster")
+    # Import lazily so non-rigging commands do not need OpenMayaAnim.
+    import maya.api.OpenMayaAnim as oma
+    selection = om.MSelectionList()
+    selection.add(node)
+    return node, oma.MFnSkinCluster(selection.getDependNode(0))
+
+
+def handle_get_skin_info(params):
+    node, skin = _skin(params)
+    return {"skin_cluster": node,
+            "influences": [{"name": p.fullPathName(), "logical_index": skin.indexForInfluenceObject(p)}
+                           for p in skin.influenceObjects()],
+            "geometry": cmds.skinCluster(node, query=True, geometry=True) or [],
+            "skinning_method": cmds.getAttr(node + ".skinningMethod"),
+            "normalize_weights": cmds.getAttr(node + ".normalizeWeights")}
+
+
+def handle_get_skin_weights(params):
+    limit = _limit(params, 20)
+    if limit > 200:
+        raise CommandError("Skin weight limit must be 1–200 vertices")
+    start = int(params.get("start", 0))
+    if start < 0:
+        raise CommandError("start must be non-negative")
+    node, skin = _skin(params)
+    # API geometry path ensures queries use the skinCluster's actual output geometry.
+    if skin.numOutputConnections() != 1:
+        raise CommandError("Skin weight queries require exactly one connected output geometry")
+    path = skin.getPathAtIndex(skin.indexForOutputConnection(0))
+    if cmds.nodeType(path.fullPathName()) != "mesh":
+        raise CommandError("Skin weight queries currently support polygon meshes only")
+    mesh = om.MFnMesh(path)
+    ids = list(range(start, min(start + limit, mesh.numVertices)))
+    influences = [p.fullPathName() for p in skin.influenceObjects()]
+    if len(ids) * len(influences) > 20000:
+        raise CommandError("Too many weights; reduce limit (maximum 20000 values)")
+    vertices = []
+    if ids:
+        components = om.MFnSingleIndexedComponent()
+        obj = components.create(om.MFn.kMeshVertComponent)
+        components.addElements(ids)
+        weights, count = skin.getWeights(path, obj)
+        for offset, vertex in enumerate(ids):
+            vertices.append({"index": vertex, "weights": list(weights[offset * count:(offset + 1) * count])})
+    return {"skin_cluster": node, "geometry": path.fullPathName(), "total_vertices": mesh.numVertices,
+            "influences": influences, "vertices": vertices}
+
+
+def handle_bind_skin(params):
+    mesh, _ = _mesh({"name": params.get("mesh")})
+    joints = [_joint(n) for n in _nodes({"names": params.get("joints")})]
+    if len(set(joints)) != len(joints):
+        raise CommandError("Provide distinct joints")
+    if any(cmds.nodeType(n) == "skinCluster" for n in (cmds.listHistory(mesh) or [])):
+        raise CommandError("Mesh already has a skinCluster")
+    maximum = params.get("max_influences", 4)
+    method = params.get("skinning_method", 0)
+    if not isinstance(maximum, int) or not 1 <= maximum <= 20 or method not in (0, 1, 2):
+        raise CommandError("max_influences must be 1–20; skinning_method must be 0, 1 or 2")
+    options = {"toSelectedBones": True, "maximumInfluences": maximum,
+               "obeyMaxInfluences": True, "normalizeWeights": 1, "skinMethod": method}
+    if params.get("name"):
+        options["name"] = params["name"]
+    with _edit_chunk("bind_skin"):
+        result = cmds.skinCluster(joints, mesh, **options)
+    return {"skin_cluster": result[0], "mesh": mesh, "joints": joints}
+
+
 HANDLERS = {
+    "get_joint_info": handle_get_joint_info,
+    "create_joint_chain": handle_create_joint_chain,
+    "create_constraint": handle_create_constraint,
+    "create_ik_handle": handle_create_ik_handle,
+    "get_skin_info": handle_get_skin_info,
+    "get_skin_weights": handle_get_skin_weights,
+    "bind_skin": handle_bind_skin,
     "create_object": handle_create_object,
     "get_attribute": handle_get_attribute,
     "set_attribute": handle_set_attribute,
