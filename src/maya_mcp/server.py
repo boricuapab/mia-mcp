@@ -83,7 +83,51 @@ def get_viewport_screenshot(width: int = 960, height: int = 540) -> Image:
     return Image(data=base64.b64decode(result["data_base64"]), format="png")
 
 
+@mcp.tool()
+def get_mesh_info(name: str) -> str:
+    """Mesh topology counts, UV sets and color sets via OpenMaya API 2.0. Accepts a mesh shape or single-mesh transform."""
+    return _fmt(send_command("get_mesh_info", {"name": name}))
+
+
+@mcp.tool()
+def get_mesh_vertices(name: str, space: str = "world", start: int = 0, limit: int = 200) -> str:
+    """Read indexed mesh vertex positions. space is world/object; paginate with start and limit (1–5000)."""
+    return _fmt(send_command("get_mesh_vertices", {"name": name, "space": space, "start": start, "limit": limit}))
+
+
+@mcp.tool()
+def get_closest_point(name: str, point: list[float], space: str = "world") -> str:
+    """Find the nearest mesh surface point and face index to [x,y,z] in world/object space."""
+    return _fmt(send_command("get_closest_point", {"name": name, "point": point, "space": space}))
+
+
+@mcp.tool()
+def list_attributes(name: str, keyable_only: bool = False, limit: int = 200) -> str:
+    """Inspect attribute types, lock and settable state. limit is 1–5000."""
+    return _fmt(send_command("list_attributes", {"name": name, "keyable_only": keyable_only, "limit": limit}))
+
+
+@mcp.tool()
+def get_connections(name: str, direction: str = "both", limit: int = 200) -> str:
+    """Inspect dependency graph plug connections. direction is incoming/outgoing/both; limit per direction is 1–5000."""
+    return _fmt(send_command("get_connections", {"name": name, "direction": direction, "limit": limit}))
+
+
+@mcp.tool()
+def get_api_help(class_name: str, member: str = "") -> str:
+    """Inspect installed maya.api.OpenMaya documentation and public members, e.g. MFnMesh/getClosestPoint."""
+    return _fmt(send_command("get_api_help", {"class_name": class_name, "member": member}))
+
+
 if not READ_ONLY:
+
+    @mcp.tool()
+    def set_transform(name: str, translation: list[float] | None = None,
+                      rotation: list[float] | None = None, scale: list[float] | None = None,
+                      space: str = "world") -> str:
+        """Set absolute transform vectors in world/object space in one undo chunk. Rotation uses Maya's current angular unit."""
+        return _fmt(send_command("set_transform", {"name": name, "translation": translation,
+                    "rotation": rotation, "scale": scale, "space": space}))
 
     @mcp.tool()
     def execute_python(code: str) -> str:

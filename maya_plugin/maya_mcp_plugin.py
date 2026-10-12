@@ -33,6 +33,7 @@ import glob
 import hmac
 import io
 import json
+import math
 import os
 import socket
 import tempfile
@@ -44,7 +45,7 @@ import maya.cmds as cmds
 import maya.mel as mel
 import maya.utils
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9877
@@ -328,7 +329,148 @@ def handle_get_viewport_screenshot(params):
     return {"format": "png", "width": width, "height": height, "data_base64": data}
 
 
+def _limit(params, default=200):
+    value = int(params.get("limit", default))
+    if not 1 <= value <= 5000:
+        raise CommandError("limit must be between 1 and 5000")
+    return value
+
+
+def _mesh(params):
+    node = _require_node(params.get("name"))
+    if cmds.nodeType(node) != "mesh":
+        shapes = cmds.listRelatives(node, shapes=True, fullPath=True, noIntermediate=True, type="mesh") or []
+        if len(shapes) != 1:
+            raise CommandError("Specify a mesh shape or a transform with exactly one mesh shape")
+        node = shapes[0]
+    selection = om.MSelectionList()
+    selection.add(node)
+    return node, om.MFnMesh(selection.getDagPath(0))
+
+
+def _space(params):
+    space = params.get("space", "world")
+    if space not in ("world", "object"):
+        raise CommandError("space must be world or object")
+    return om.MSpace.kWorld if space == "world" else om.MSpace.kObject
+
+
+def _vector(value):
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise CommandError("Expected three finite numbers")
+    try:
+        values = [float(v) for v in value]
+    except (TypeError, ValueError):
+        raise CommandError("Expected three finite numbers")
+    if not all(math.isfinite(v) for v in values):
+        raise CommandError("Expected three finite numbers")
+    return values
+
+
+def handle_get_mesh_info(params):
+    node, mesh = _mesh(params)
+    return {"name": node, "vertices": mesh.numVertices, "edges": mesh.numEdges,
+            "faces": mesh.numPolygons,
+            "uv_sets": [{"name": name, "uv_count": mesh.numUVs(name)} for name in mesh.getUVSetNames()],
+            "color_sets": list(mesh.getColorSetNames())}
+
+
+def handle_get_mesh_vertices(params):
+    limit = _limit(params)
+    start = int(params.get("start", 0))
+    if start < 0:
+        raise CommandError("start must be non-negative")
+    space = _space(params)
+    node, mesh = _mesh(params)
+    points = mesh.getPoints(space)
+    return {"name": node, "space": params.get("space", "world"), "total": len(points),
+            "start": start, "vertices": [{"index": i, "position": [points[i].x, points[i].y, points[i].z]}
+                                         for i in range(start, min(start + limit, len(points)))]}
+
+
+def handle_get_closest_point(params):
+    point = _vector(params.get("point"))
+    space = _space(params)
+    node, mesh = _mesh(params)
+    position, face = mesh.getClosestPoint(om.MPoint(*point), space)
+    return {"name": node, "space": params.get("space", "world"),
+            "position": [position.x, position.y, position.z], "face_index": face}
+
+
+def handle_list_attributes(params):
+    node = _require_node(params.get("name"))
+    limit = _limit(params)
+    options = {"keyable": True} if params.get("keyable_only", False) else {}
+    attrs = cmds.listAttr(node, **options) or []
+    entries = []
+    for attr in attrs[:limit]:
+        plug = node + "." + attr
+        try:
+            entries.append({"name": attr, "type": cmds.getAttr(plug, type=True),
+                            "locked": cmds.getAttr(plug, lock=True),
+                            "settable": cmds.getAttr(plug, settable=True)})
+        except Exception as exc:
+            entries.append({"name": attr, "error": str(exc)})
+    return {"name": node, "total": len(attrs), "attributes": entries}
+
+
+def handle_get_connections(params):
+    node = _require_node(params.get("name"))
+    direction = params.get("direction", "both")
+    if direction not in ("incoming", "outgoing", "both"):
+        raise CommandError("direction must be incoming, outgoing or both")
+    limit = _limit(params)
+    result = {}
+    for key, source in (("incoming", True), ("outgoing", False)):
+        if direction not in (key, "both"):
+            continue
+        pairs = cmds.listConnections(node, source=source, destination=not source,
+                                     plugs=True, connections=True) or []
+        result[key] = {"total": len(pairs) // 2,
+                       "connections": [{"source": pairs[i + 1] if source else pairs[i],
+                                        "destination": pairs[i] if source else pairs[i + 1]}
+                                       for i in range(0, min(len(pairs), limit * 2), 2)]}
+    return {"name": node, **result}
+
+
+def handle_get_api_help(params):
+    name = params.get("class_name", "")
+    if not isinstance(name, str) or name.startswith("_") or not hasattr(om, name):
+        raise CommandError("Unknown maya.api.OpenMaya class")
+    cls = getattr(om, name)
+    member = params.get("member", "")
+    if member and (member.startswith("_") or not hasattr(cls, member)):
+        raise CommandError("Unknown public API member")
+    target = getattr(cls, member) if member else cls
+    return {"class_name": name, "member": member, "help": _truncate(target.__doc__ or "No inline documentation"),
+            "members": [n for n in dir(cls) if not n.startswith("_")] if not member else []}
+
+
+def handle_set_transform(params):
+    node = _require_node(params.get("name"))
+    if not cmds.objectType(node, isAType="transform"):
+        raise CommandError("Expected a transform node")
+    _space(params)
+    options = {key: _vector(params[key]) for key in ("translation", "rotation", "scale")
+               if params.get(key) is not None}
+    if not options:
+        raise CommandError("Provide translation, rotation or scale")
+    cmds.undoInfo(openChunk=True, chunkName="maya_mcp_set_transform")
+    try:
+        cmds.xform(node, worldSpace=params.get("space", "world") == "world", **options)
+    finally:
+        cmds.undoInfo(closeChunk=True)
+    return {"name": node, "space": params.get("space", "world"), "applied": options}
+
+
 HANDLERS = {
+    "get_mesh_info": handle_get_mesh_info,
+    "get_mesh_vertices": handle_get_mesh_vertices,
+    "get_closest_point": handle_get_closest_point,
+    "list_attributes": handle_list_attributes,
+    "get_connections": handle_get_connections,
+    "get_api_help": handle_get_api_help,
+    "set_transform": handle_set_transform,
     "ping": handle_ping,
     "get_scene_info": handle_get_scene_info,
     "list_objects": handle_list_objects,
