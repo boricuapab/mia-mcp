@@ -30,6 +30,8 @@ Workflow tips:
 - Use select_objects to manage selection and frame_objects to fit a viewport camera.
 - Use get_joint_info/get_skin_info/get_skin_weights to inspect rigs; create_joint_chain,
   create_constraint, create_ik_handle and bind_skin for undoable rig construction.
+- Use get_timeline/get_animation_curve for animation inspection. Animation edits require
+  explicit attributes; frame numbers use the scene time unit. Bake explicit channels to keys.
 """
 
 mcp = _Server("maya", instructions=INSTRUCTIONS)
@@ -148,7 +150,50 @@ def get_skin_weights(skin_cluster: str, start: int = 0, limit: int = 20) -> str:
     return _fmt(send_command("get_skin_weights", {"skin_cluster": skin_cluster, "start": start, "limit": limit}))
 
 
+@mcp.tool()
+def get_timeline() -> str:
+    """Read current frame, time unit, playback range and animation range."""
+    return _fmt(send_command("get_timeline"))
+
+
+@mcp.tool()
+def get_animation_curve(curve: str, start: int = 0, limit: int = 200) -> str:
+    """Inspect an explicit animCurve node via API 2.0: indexed keys, values, tangent enums and infinity. limit 1–5000; API output units."""
+    return _fmt(send_command("get_animation_curve", {"curve": curve, "start": start, "limit": limit}))
+
+
 if not READ_ONLY:
+
+    @mcp.tool()
+    def set_timeline(current_time: float | None = None, start: float | None = None, end: float | None = None) -> str:
+        """Set current frame and/or playback range. Provide both start/end to change range; does not change scene time unit."""
+        return _fmt(send_command("set_timeline", {"current_time": current_time, "start": start, "end": end}))
+
+    @mcp.tool()
+    def set_keyframes(name: str, attributes: list[str], times: list[float], value: float | None = None, breakdown: bool = False) -> str:
+        """Key 1–60 explicit scalar channels at 1–200 frame times. Optional value requires one channel; otherwise key current channel values."""
+        return _fmt(send_command("set_keyframes", {"name": name, "attributes": attributes, "times": times, "value": value, "breakdown": breakdown}))
+
+    @mcp.tool()
+    def delete_keyframes(name: str, attributes: list[str], start: float, end: float) -> str:
+        """Delete keys in an inclusive frame range on explicit channels, without modifying the key clipboard."""
+        return _fmt(send_command("delete_keyframes", {"name": name, "attributes": attributes, "start": start, "end": end}))
+
+    @mcp.tool()
+    def set_key_tangents(name: str, attributes: list[str], start: float, end: float,
+                         in_tangent: str = "auto", out_tangent: str = "auto") -> str:
+        """Set auto/linear/flat/spline/clamped/plateau tangents in a frame range; outgoing also supports step/stepnext."""
+        return _fmt(send_command("set_key_tangents", {"name": name, "attributes": attributes, "start": start, "end": end, "in_tangent": in_tangent, "out_tangent": out_tangent}))
+
+    @mcp.tool()
+    def set_curve_infinity(name: str, attributes: list[str], pre: str = "constant", post: str = "constant") -> str:
+        """Set constant/linear/cycle/cycleRelative/oscillate extrapolation for explicit animated channels."""
+        return _fmt(send_command("set_curve_infinity", {"name": name, "attributes": attributes, "pre": pre, "post": post}))
+
+    @mcp.tool()
+    def bake_animation(name: str, attributes: list[str], start: float, end: float, sample_by: float = 1, simulation: bool = True) -> str:
+        """Bake explicit channels to keys over frame range (maximum 20000 channel samples). Restores time, preserves outside keys where Maya supports it, keeps implicit controls."""
+        return _fmt(send_command("bake_animation", {"name": name, "attributes": attributes, "start": start, "end": end, "sample_by": sample_by, "simulation": simulation}))
 
     @mcp.tool()
     def create_joint_chain(positions: list[list[float]], names: list[str] = [], parent: str = "", radius: float = 1) -> str:

@@ -45,7 +45,7 @@ import maya.cmds as cmds
 import maya.mel as mel
 import maya.utils
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9877
@@ -820,7 +820,164 @@ def handle_bind_skin(params):
     return {"skin_cluster": result[0], "mesh": mesh, "joints": joints}
 
 
+def _finite(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise CommandError(label + " must be a finite number")
+    return float(value)
+
+
+def _time_range(params):
+    start = _finite(params.get("start"), "start")
+    end = _finite(params.get("end"), "end")
+    if start > end:
+        raise CommandError("start must not exceed end")
+    return start, end
+
+
+def _animation_plugs(params):
+    node = _require_node(params.get("name"))
+    attrs = params.get("attributes")
+    if not isinstance(attrs, list) or not 1 <= len(attrs) <= 60:
+        raise CommandError("Provide 1–60 explicit attributes")
+    plugs = [_plug({"name": node, "attribute": attr}) for attr in attrs]
+    if len(set(plugs)) != len(plugs):
+        raise CommandError("Provide distinct attributes")
+    return plugs
+
+
+def handle_get_timeline(params):
+    return {"current_time": cmds.currentTime(query=True), "time_unit": cmds.currentUnit(query=True, time=True),
+            "playback_start": cmds.playbackOptions(query=True, minTime=True),
+            "playback_end": cmds.playbackOptions(query=True, maxTime=True),
+            "animation_start": cmds.playbackOptions(query=True, animationStartTime=True),
+            "animation_end": cmds.playbackOptions(query=True, animationEndTime=True)}
+
+
+def handle_set_timeline(params):
+    current = _finite(params["current_time"], "current_time") if params.get("current_time") is not None else None
+    options = {}
+    if params.get("start") is not None or params.get("end") is not None:
+        start, end = _time_range(params)
+        options = {"minTime": start, "maxTime": end}
+    if current is None and not options:
+        raise CommandError("Provide current_time or both start and end")
+    with _edit_chunk("timeline"):
+        if options:
+            cmds.playbackOptions(**options)
+        if current is not None:
+            cmds.currentTime(current, edit=True)
+    return handle_get_timeline({})
+
+
+def handle_set_keyframes(params):
+    plugs = _animation_plugs(params)
+    times = params.get("times")
+    if not isinstance(times, list) or not 1 <= len(times) <= 200:
+        raise CommandError("Provide 1–200 times")
+    times = [_finite(t, "time") for t in times]
+    options = {"time": times, "breakdown": params.get("breakdown", False)}
+    if params.get("value") is not None:
+        if len(plugs) != 1:
+            raise CommandError("An explicit value requires exactly one attribute")
+        options["value"] = _finite(params["value"], "value")
+    for plug in plugs:
+        if cmds.getAttr(plug, lock=True):
+            raise CommandError("Attribute is locked: " + plug)
+        if cmds.getAttr(plug, type=True) not in ("bool", "byte", "short", "long", "enum", "float", "double", "doubleLinear", "doubleAngle", "time"):
+            raise CommandError("Only scalar numeric attributes can be keyed: " + plug)
+    with _edit_chunk("set_keyframes"):
+        count = cmds.setKeyframe(plugs, **options)
+    return {"key_count": count, "plugs": plugs, "times": times}
+
+
+def _anim_curve(params):
+    node = _require_node(params.get("curve"))
+    if not cmds.nodeType(node).startswith("animCurve"):
+        raise CommandError("Expected an animation curve node")
+    import maya.api.OpenMayaAnim as oma
+    selection = om.MSelectionList()
+    selection.add(node)
+    return node, oma.MFnAnimCurve(selection.getDependNode(0))
+
+
+def handle_get_animation_curve(params):
+    limit = _limit(params)
+    start = int(params.get("start", 0))
+    if start < 0:
+        raise CommandError("start must be non-negative")
+    node, curve = _anim_curve(params)
+    if curve.animCurveType in (2, 6):  # kAnimCurveTT / kAnimCurveUT: value() cannot read time outputs.
+        raise CommandError("Time-output animation curves are not supported; use execute_python for TT/UT curves")
+    keys = []
+    for i in range(start, min(start + limit, curve.numKeys)):
+        value = curve.input(i)
+        keys.append({"index": i, "input": value.asUnits(om.MTime.uiUnit()) if curve.isTimeInput else value,
+                     "value": curve.value(i), "in_tangent": curve.inTangentType(i),
+                     "out_tangent": curve.outTangentType(i), "breakdown": curve.isBreakdown(i)})
+    return {"curve": node, "curve_type": curve.animCurveType, "time_input": curve.isTimeInput,
+            "total_keys": curve.numKeys, "weighted": curve.isWeighted,
+            "pre_infinity": curve.preInfinityType, "post_infinity": curve.postInfinityType, "keys": keys,
+            "value_units": "API internal units: radians for angles, centimeters for distances, seconds for time outputs"}
+
+
+def handle_delete_keyframes(params):
+    plugs = _animation_plugs(params)
+    time = _time_range(params)
+    with _edit_chunk("delete_keys"):
+        cmds.cutKey(plugs, time=time, option="keys", clear=True, animation="objects")
+    return {"plugs": plugs, "time_range": list(time)}
+
+
+def handle_set_key_tangents(params):
+    plugs = _animation_plugs(params)
+    time = _time_range(params)
+    incoming = params.get("in_tangent", "auto")
+    outgoing = params.get("out_tangent", "auto")
+    common = {"auto", "linear", "flat", "spline", "clamped", "plateau"}
+    if incoming not in common or outgoing not in common | {"step", "stepnext"}:
+        raise CommandError("Unsupported tangent type; step/stepnext are outgoing only")
+    with _edit_chunk("key_tangents"):
+        cmds.keyTangent(plugs, edit=True, time=time, inTangentType=incoming, outTangentType=outgoing, animation="objects")
+    return {"plugs": plugs, "time_range": list(time), "in_tangent": incoming, "out_tangent": outgoing}
+
+
+def handle_set_curve_infinity(params):
+    plugs = _animation_plugs(params)
+    pre, post = params.get("pre", "constant"), params.get("post", "constant")
+    allowed = {"constant", "linear", "cycle", "cycleRelative", "oscillate"}
+    if pre not in allowed or post not in allowed:
+        raise CommandError("Infinity must be constant, linear, cycle, cycleRelative or oscillate")
+    with _edit_chunk("infinity"):
+        cmds.setInfinity(plugs, preInfinite=pre, postInfinite=post)
+    return {"plugs": plugs, "pre": pre, "post": post}
+
+
+def handle_bake_animation(params):
+    plugs = _animation_plugs(params)
+    time = _time_range(params)
+    step = _positive(params.get("sample_by", 1), "sample_by")
+    if ((time[1] - time[0]) / step + 1) * len(plugs) > 20000:
+        raise CommandError("Bake exceeds 20000 channel samples; reduce range or increase sample_by")
+    previous = cmds.currentTime(query=True)
+    with _edit_chunk("bake_animation"):
+        try:
+            count = cmds.bakeResults(plugs, time=time, sampleBy=step, simulation=params.get("simulation", True),
+                                     preserveOutsideKeys=True, sparseAnimCurveBake=False,
+                                     disableImplicitControl=False, animation="objects")
+        finally:
+            cmds.currentTime(previous, edit=True)
+    return {"channels_baked": count, "plugs": plugs, "time_range": list(time), "sample_by": step}
+
+
 HANDLERS = {
+    "get_timeline": handle_get_timeline,
+    "set_timeline": handle_set_timeline,
+    "set_keyframes": handle_set_keyframes,
+    "get_animation_curve": handle_get_animation_curve,
+    "delete_keyframes": handle_delete_keyframes,
+    "set_key_tangents": handle_set_key_tangents,
+    "set_curve_infinity": handle_set_curve_infinity,
+    "bake_animation": handle_bake_animation,
     "get_joint_info": handle_get_joint_info,
     "create_joint_chain": handle_create_joint_chain,
     "create_constraint": handle_create_constraint,

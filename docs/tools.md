@@ -3,6 +3,7 @@
 [Back to README](../README.md)
 
 See [rigging tools](rigging.md) for joints, constraints, inverse kinematics, and skinning.
+See [animation tools](animation.md) for timelines, keyframes, curve inspection, tangents, looping, and baking.
 
 ## Inspection, API, and execution tools
 
