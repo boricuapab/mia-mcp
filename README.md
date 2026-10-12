@@ -27,6 +27,17 @@ Same shape as the Blender setup (add-on + MCP server + client):
 
 Pick one:
 
+- **Plug-in + custom shelf (recommended):** drag `install.py` from this checkout onto
+  Maya's viewport. It installs the plug-in, the supplied start-server icon, and a
+  persistent **miamcp** shelf. Click **Start Maya MCP** to start the bridge. Running
+  the installer again updates the existing server button without removing other
+  shelf buttons. The button uses Maya's plug-in search path, so no user-specific
+  paths need editing. Keep `install.py`, `maya_plugin/`, and `icons/` together.
+  Alternatively, run in Maya's Python Script Editor:
+  ```python
+  import runpy
+  runpy.run_path("/absolute/path/to/mia-mcp/install.py", run_name="__main__")
+  ```
 - **Load once:** in Maya's Script Editor (Python tab):
   ```python
   import maya.cmds as cmds
