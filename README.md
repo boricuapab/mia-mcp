@@ -142,6 +142,46 @@ client/server to discover the new tools. Read-only mode also hides `set_transfor
 
 ## Configuration (environment variables)
 
+### Scene building tools (0.3.0)
+
+| Tool | Supported operations |
+| --- | --- |
+| `create_object` | Cube, sphere, cylinder, cone, plane, torus, camera, point/directional/spot/area lights |
+| `get_attribute` / `set_attribute` | Read attribute values; edit numeric, boolean, string or float3/double3 values |
+| `select_objects` | Replace, add or clear selection |
+| `frame_objects` | Fit a specified or focused model-panel camera to nodes |
+| `create_curve` | Open NURBS curves from XYZ control points, degree 1–3 |
+| `create_material` | Lambert, Blinn or Phong shaders, shading-engine wiring and optional assignment |
+| `organize_objects` | Group, parent or unparent transforms while preserving world placement |
+| `mesh_operation` | Smooth, triangulate or combine polygon meshes with construction history |
+
+Examples:
+
+```python
+create_object(kind="cube", name="prop", size=2, position=[0, 1, 0])
+create_material(shader_type="blinn", name="redPaint", color=[0.8, 0.1, 0.1], names=["|prop"])
+set_attribute(name="|prop", attribute="visibility", value=True)
+create_curve(name="path", degree=1, points=[[0, 0, 0], [2, 1, 0], [4, 0, 0]])
+organize_objects(names=["|prop", "|path"], action="group", name="props")
+frame_objects(names=["|props"], panel="modelPanel4")
+```
+
+Node lists are limited to 200 explicit names; use full paths for ambiguous names.
+`size` is a positive uniform transform scale for default primitives, not a dimension in scene units.
+Curves accept up to 5000 control points. Material assignment replaces existing shading membership.
+Mesh operations act on whole meshes, with smoothing limited to 1–3 divisions.
+Grouping/parenting requires distinct transforms without ancestor/descendant pairs.
+Editing and viewport framing use undo chunks; a failed operation can leave partial changes,
+which can be reverted with `undo`. Only `get_attribute` from this set is exposed in read-only mode.
+
+The bridge and dependencies remain standalone. Reload the Maya plug-in and restart the MCP
+server/client after updating. Automated tests use Maya stubs and do not verify rendered results.
+
+```bash
+python tests/test_modeling.py
+python tests/test_bridge.py
+```
+
 Set these in the MCP client's `env` for the server, and (for `MAYA_MCP_PORT` / `MAYA_MCP_TOKEN`) in Maya's environment before it starts.
 
 | Variable | Default | Purpose |

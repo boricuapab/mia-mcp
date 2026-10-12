@@ -223,6 +223,7 @@ async def test_mcp_stdio():
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = {t.name for t in (await session.list_tools()).tools}
+                check("MCP lists modeling tools", {"create_object", "get_attribute", "set_attribute", "select_objects", "frame_objects", "create_curve", "create_material", "organize_objects", "mesh_operation"} <= tools)
                 check("MCP lists tools", {"get_scene_info", "execute_python", "undo", "get_viewport_screenshot", "get_mesh_info", "get_mesh_vertices", "get_closest_point", "list_attributes", "get_connections", "get_api_help", "set_transform"} <= tools)
                 res = await session.call_tool("execute_python", {"code": "1 + 1"})
                 check("MCP execute_python round trip", not is_err(res) and '"2"' in res.content[0].text)
@@ -235,7 +236,8 @@ async def test_mcp_stdio():
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = {t.name for t in (await session.list_tools()).tools}
-                check("read-only hides all editing tools", not {"execute_python", "undo", "set_transform"} & tools)
+                check("read-only hides all editing tools", not {"execute_python", "undo", "set_transform", "create_object", "set_attribute", "select_objects", "frame_objects", "create_curve", "create_material", "organize_objects", "mesh_operation"} & tools)
+                check("read-only retains attribute values", "get_attribute" in tools)
                 check("read-only retains mesh inspection", {"get_mesh_info", "get_closest_point"} <= tools)
     finally:
         server.stop()

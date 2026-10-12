@@ -25,6 +25,9 @@ Workflow tips:
 - If unsure about a command's flags, call search_commands / get_command_help instead of guessing.
 - Each execute_python call is a single undo chunk; call undo to revert a bad change.
 - Use get_viewport_screenshot to check visual results.
+- Use create_object/create_curve/create_material for scene building; organize_objects for hierarchy.
+- Prefer set_attribute/set_transform and mesh_operation for supported edits; each is undoable.
+- Use select_objects to manage selection and frame_objects to fit a viewport camera.
 """
 
 mcp = _Server("maya", instructions=INSTRUCTIONS)
@@ -119,7 +122,55 @@ def get_api_help(class_name: str, member: str = "") -> str:
     return _fmt(send_command("get_api_help", {"class_name": class_name, "member": member}))
 
 
+@mcp.tool()
+def get_attribute(name: str, attribute: str) -> str:
+    """Read one attribute's value and Maya type; use an explicit node name."""
+    return _fmt(send_command("get_attribute", {"name": name, "attribute": attribute}))
+
+
 if not READ_ONLY:
+
+    @mcp.tool()
+    def create_object(kind: str = "cube", name: str = "", size: float = 1,
+                      position: list[float] = [0, 0, 0]) -> str:
+        """Create cube/sphere/cylinder/cone/plane/torus/camera or point_light/directional_light/spot_light/area_light. size scales primitives only."""
+        return _fmt(send_command("create_object", {"kind": kind, "name": name, "size": size, "position": position}))
+
+    @mcp.tool()
+    def set_attribute(name: str, attribute: str, value: str | float | bool | list[float]) -> str:
+        """Set a string, numeric, boolean or three-component attribute in one undo chunk. Locked/connected attributes are rejected."""
+        return _fmt(send_command("set_attribute", {"name": name, "attribute": attribute, "value": value}))
+
+    @mcp.tool()
+    def select_objects(names: list[str] = [], mode: str = "replace") -> str:
+        """Replace/add explicit node selection, or clear it with mode=clear. Up to 200 nodes."""
+        return _fmt(send_command("select_objects", {"names": names, "mode": mode}))
+
+    @mcp.tool()
+    def frame_objects(names: list[str], panel: str = "") -> str:
+        """Fit a model-panel camera to explicit nodes without changing selection. Defaults to focused panel; requires Maya UI."""
+        return _fmt(send_command("frame_objects", {"names": names, "panel": panel}))
+
+    @mcp.tool()
+    def create_curve(points: list[list[float]], degree: int = 1, name: str = "") -> str:
+        """Create an open NURBS curve from degree+1 to 5000 XYZ control points. degree is 1, 2 or 3."""
+        return _fmt(send_command("create_curve", {"points": points, "degree": degree, "name": name}))
+
+    @mcp.tool()
+    def create_material(shader_type: str = "lambert", name: str = "",
+                        color: list[float] = [0.5, 0.5, 0.5], names: list[str] = []) -> str:
+        """Create lambert/blinn/phong shader and shading engine; optionally assign to nodes. RGB channels are 0–1; assignment replaces existing materials."""
+        return _fmt(send_command("create_material", {"shader_type": shader_type, "name": name, "color": color, "names": names}))
+
+    @mcp.tool()
+    def organize_objects(names: list[str], action: str = "group", name: str = "", parent: str = "") -> str:
+        """Group, parent or unparent transforms while preserving world placement. parent is required for action=parent."""
+        return _fmt(send_command("organize_objects", {"names": names, "action": action, "name": name, "parent": parent}))
+
+    @mcp.tool()
+    def mesh_operation(names: list[str], operation: str, divisions: int = 1) -> str:
+        """Smooth (1–3 divisions), triangulate or combine meshes with construction history in one undo chunk."""
+        return _fmt(send_command("mesh_operation", {"names": names, "operation": operation, "divisions": divisions}))
 
     @mcp.tool()
     def set_transform(name: str, translation: list[float] | None = None,

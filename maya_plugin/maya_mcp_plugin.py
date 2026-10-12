@@ -45,7 +45,7 @@ import maya.cmds as cmds
 import maya.mel as mel
 import maya.utils
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 9877
@@ -463,7 +463,213 @@ def handle_set_transform(params):
     return {"name": node, "space": params.get("space", "world"), "applied": options}
 
 
+@contextlib.contextmanager
+def _edit_chunk(label):
+    cmds.undoInfo(openChunk=True, chunkName="maya_mcp_" + label)
+    try:
+        yield
+    finally:
+        cmds.undoInfo(closeChunk=True)
+
+
+def _nodes(params):
+    names = params.get("names")
+    if not isinstance(names, list) or not 1 <= len(names) <= 200:
+        raise CommandError("names must contain 1–200 explicit node names")
+    return [_require_node(n) for n in names]
+
+
+def _positive(value, label):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise CommandError(label + " must be a positive finite number")
+    if not math.isfinite(value) or value <= 0:
+        raise CommandError(label + " must be a positive finite number")
+    return value
+
+
+def handle_create_object(params):
+    kind = params.get("kind", "cube")
+    factories = {"cube": "polyCube", "sphere": "polySphere", "cylinder": "polyCylinder",
+                 "cone": "polyCone", "plane": "polyPlane", "torus": "polyTorus",
+                 "camera": "camera", "point_light": "pointLight", "directional_light": "directionalLight",
+                 "spot_light": "spotLight", "area_light": "areaLight"}
+    if kind not in factories:
+        raise CommandError("Unsupported object kind. Choose: " + ", ".join(sorted(factories)))
+    size = _positive(params.get("size", 1), "size")
+    position = _vector(params.get("position", [0, 0, 0]))
+    name = params.get("name", "")
+    with _edit_chunk("create_object"):
+        result = getattr(cmds, factories[kind])(**({"name": name} if name else {}))
+        node = result[0] if isinstance(result, (list, tuple)) else result
+        if cmds.nodeType(node) != "transform":
+            node = cmds.listRelatives(node, parent=True, fullPath=True)[0]
+        cmds.xform(node, worldSpace=True, translation=position)
+        if kind not in ("camera", "point_light", "directional_light", "spot_light", "area_light"):
+            cmds.xform(node, scale=[size] * 3)
+        return {"name": _require_node(node), "kind": kind}
+
+
+def _plug(params):
+    node = _require_node(params.get("name"))
+    attr = params.get("attribute")
+    if not isinstance(attr, str) or not attr or "." in attr:
+        raise CommandError("attribute must be a single attribute name (array indices allowed)")
+    plug = node + "." + attr
+    if not cmds.objExists(plug):
+        raise CommandError("Attribute not found: " + plug)
+    return plug
+
+
+def handle_get_attribute(params):
+    plug = _plug(params)
+    return {"plug": plug, "type": cmds.getAttr(plug, type=True), "value": cmds.getAttr(plug)}
+
+
+def handle_set_attribute(params):
+    plug = _plug(params)
+    kind = cmds.getAttr(plug, type=True)
+    value = params.get("value")
+    if not cmds.getAttr(plug, settable=True):
+        raise CommandError("Attribute is locked or connected: " + plug)
+    if kind == "string":
+        if not isinstance(value, str):
+            raise CommandError("Expected a string value")
+        args, options = [value], {"type": "string"}
+    elif kind in ("double3", "float3"):
+        args, options = _vector(value), {"type": kind}
+    elif kind in ("bool", "byte", "char", "short", "long", "enum", "float", "double", "doubleLinear", "doubleAngle", "time"):
+        if not isinstance(value, (int, float, bool)) or not math.isfinite(value):
+            raise CommandError("Expected a finite numeric value")
+        if kind in ("bool", "byte", "char", "short", "long", "enum") and int(value) != value:
+            raise CommandError("Expected an integer value")
+        if kind == "bool" and value not in (0, 1):
+            raise CommandError("Boolean value must be true/false or 0/1")
+        args, options = [value], {}
+    else:
+        raise CommandError("Unsupported attribute type: " + kind)
+    with _edit_chunk("set_attribute"):
+        cmds.setAttr(plug, *args, **options)
+    return handle_get_attribute(params)
+
+
+def handle_select_objects(params):
+    mode = params.get("mode", "replace")
+    if mode not in ("replace", "add", "clear"):
+        raise CommandError("mode must be replace, add or clear")
+    nodes = [] if mode == "clear" else _nodes(params)
+    with _edit_chunk("select"):
+        if mode == "clear":
+            cmds.select(clear=True)
+        else:
+            cmds.select(nodes, **{mode: True})
+    return {"selection": cmds.ls(selection=True, long=True) or []}
+
+
+def handle_frame_objects(params):
+    nodes = _nodes(params)
+    panel = params.get("panel") or cmds.getPanel(withFocus=True)
+    if panel not in (cmds.getPanel(type="modelPanel") or []):
+        raise CommandError("Specify an existing modelPanel (Maya UI required)")
+    camera = cmds.modelPanel(panel, query=True, camera=True)
+    with _edit_chunk("frame_objects"):
+        cmds.viewFit(camera, nodes, animate=False)
+    return {"panel": panel, "camera": camera, "framed": nodes}
+
+
+def handle_create_curve(params):
+    points = params.get("points")
+    degree = params.get("degree", 1)
+    if degree not in (1, 2, 3) or not isinstance(points, list) or not degree + 1 <= len(points) <= 5000:
+        raise CommandError("degree must be 1–3; provide degree+1 to 5000 XYZ points")
+    points = [_vector(p) for p in points]
+    options = {"point": points, "degree": degree}
+    if params.get("name"):
+        options["name"] = params["name"]
+    with _edit_chunk("create_curve"):
+        node = cmds.curve(**options)
+    return {"name": _require_node(node), "degree": degree, "point_count": len(points)}
+
+
+def handle_create_material(params):
+    kind = params.get("shader_type", "lambert")
+    if kind not in ("lambert", "blinn", "phong"):
+        raise CommandError("shader_type must be lambert, blinn or phong")
+    color = _vector(params.get("color", [0.5, 0.5, 0.5]))
+    if any(v < 0 or v > 1 for v in color):
+        raise CommandError("color channels must be between 0 and 1")
+    nodes = _nodes(params) if params.get("names") else []
+    options = {"asShader": True}
+    if params.get("name"):
+        options["name"] = params["name"]
+    with _edit_chunk("create_material"):
+        material = cmds.shadingNode(kind, **options)
+        engine = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=material + "SG")
+        cmds.setAttr(material + ".color", *color, type="double3")
+        cmds.connectAttr(material + ".outColor", engine + ".surfaceShader")
+        if nodes:
+            cmds.sets(nodes, edit=True, forceElement=engine)
+    return {"material": material, "shading_engine": engine, "assigned": nodes}
+
+
+def handle_organize_objects(params):
+    nodes = _nodes(params)
+    if len(set(nodes)) != len(nodes) or any(a != b and b.startswith(a + "|") for a in nodes for b in nodes):
+        raise CommandError("Use distinct transforms without ancestor/descendant pairs")
+    action = params.get("action", "group")
+    if action not in ("group", "parent", "unparent"):
+        raise CommandError("action must be group, parent or unparent")
+    for node in nodes:
+        if not cmds.objectType(node, isAType="transform"):
+            raise CommandError("Organization requires transform nodes")
+    parent = _require_node(params.get("parent")) if action == "parent" else None
+    if parent and not cmds.objectType(parent, isAType="transform"):
+        raise CommandError("Parent must be a transform")
+    if parent and any(parent == n or parent.startswith(n + "|") for n in nodes):
+        raise CommandError("Cannot parent a node to itself or its descendant")
+    with _edit_chunk("organize"):
+        if action == "group":
+            result = cmds.group(nodes, **({"name": params["name"]} if params.get("name") else {}))
+        elif action == "parent":
+            result = cmds.parent(nodes, parent, absolute=True)
+        else:
+            result = cmds.parent(nodes, world=True, absolute=True)
+    return {"action": action, "result": result}
+
+
+def handle_mesh_operation(params):
+    nodes = _nodes(params)
+    operation = params.get("operation")
+    if operation not in ("smooth", "triangulate", "combine"):
+        raise CommandError("operation must be smooth, triangulate or combine")
+    for node in nodes:
+        _mesh({"name": node})
+    if operation == "combine" and len(nodes) < 2:
+        raise CommandError("combine requires at least two meshes")
+    divisions = params.get("divisions", 1)
+    if not isinstance(divisions, int) or not 1 <= divisions <= 3:
+        raise CommandError("divisions must be an integer from 1 to 3")
+    with _edit_chunk("mesh_operation"):
+        if operation == "smooth":
+            result = cmds.polySmooth(nodes, divisions=divisions, constructionHistory=True)
+        elif operation == "triangulate":
+            result = cmds.polyTriangulate(nodes, constructionHistory=True)
+        else:
+            result = cmds.polyUnite(nodes, constructionHistory=True)
+    return {"operation": operation, "result": result}
+
+
 HANDLERS = {
+    "create_object": handle_create_object,
+    "get_attribute": handle_get_attribute,
+    "set_attribute": handle_set_attribute,
+    "select_objects": handle_select_objects,
+    "frame_objects": handle_frame_objects,
+    "create_curve": handle_create_curve,
+    "create_material": handle_create_material,
+    "organize_objects": handle_organize_objects,
+    "mesh_operation": handle_mesh_operation,
     "get_mesh_info": handle_get_mesh_info,
     "get_mesh_vertices": handle_get_mesh_vertices,
     "get_closest_point": handle_get_closest_point,
