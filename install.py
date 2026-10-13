@@ -7,8 +7,8 @@ import shutil
 START_COMMAND = '''import maya.cmds as cmds
 if "maya_mcp_plugin" not in (cmds.pluginInfo(query=True, listPlugins=True) or []):
     cmds.loadPlugin("maya_mcp_plugin.py")
-else:
-    print("[maya-mcp] Bridge plug-in is already loaded.")
+import mia_mcp_ui
+mia_mcp_ui.start_server()
 '''
 
 
@@ -21,9 +21,11 @@ def install():
     plugin_dir = user_dir / "plug-ins"
     icon_dir = Path(cmds.internalVar(userPrefDir=True)) / "icons"
     shelf_dir = Path(cmds.internalVar(userShelfDir=True))
-    for folder in (plugin_dir, icon_dir, shelf_dir):
+    script_dir = Path(cmds.internalVar(userScriptDir=True))
+    for folder in (plugin_dir, icon_dir, shelf_dir, script_dir):
         folder.mkdir(parents=True, exist_ok=True)
     shutil.copy2(root / "maya_plugin" / "maya_mcp_plugin.py", plugin_dir / "maya_mcp_plugin.py")
+    shutil.copy2(root / "maya_plugin" / "mia_mcp_ui.py", script_dir / "mia_mcp_ui.py")
     icon = icon_dir / "mia_mcp_start_server_icon.png"
     shutil.copy2(root / "icons" / icon.name, icon)
 

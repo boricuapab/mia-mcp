@@ -6,7 +6,7 @@ import socket
 import uuid
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 9877
+DEFAULT_PORT = 8675
 DEFAULT_TIMEOUT = 60.0
 
 

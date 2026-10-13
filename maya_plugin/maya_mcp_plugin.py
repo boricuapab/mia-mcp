@@ -38,6 +38,8 @@ import os
 import socket
 import tempfile
 import threading
+import time
+from collections import deque
 import traceback
 
 import maya.api.OpenMaya as om
@@ -48,7 +50,7 @@ import maya.utils
 __version__ = "0.6.0"
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 9877
+DEFAULT_PORT = 8675
 MAX_REQUEST_BYTES = 32 * 1024 * 1024
 MAX_TEXT = 20000  # truncate stdout / repr output returned to the LLM
 
@@ -1205,6 +1207,12 @@ class BridgeServer(object):
         self._sock = None
         self._thread = None
         self._running = threading.Event()
+        self.started_at = None
+        self.requests = 0
+        self.errors = 0
+        self.last_ms = 0
+        self.log = deque(maxlen=200)
+        self.stats_lock = threading.Lock()
 
     @property
     def running(self):
@@ -1220,6 +1228,8 @@ class BridgeServer(object):
         sock.settimeout(1.0)
         self._sock = sock
         self._running.set()
+        self.started_at = time.time()
+        self.log.append("Listening on {}:{}".format(self.host, self.port))
         self._thread = threading.Thread(target=self._accept_loop, name="maya-mcp-accept", daemon=True)
         self._thread.start()
         om.MGlobal.displayInfo("[maya-mcp] listening on {}:{}".format(self.host, self.port))
@@ -1270,6 +1280,21 @@ class BridgeServer(object):
                         return
 
     def dispatch(self, raw):
+        began = time.time()
+        response = self._dispatch(raw)
+        try:
+            name = json.loads(raw.decode("utf-8")).get("type", "unknown")
+        except Exception:
+            name = "invalid request"
+        with self.stats_lock:
+            self.requests += 1
+            self.errors += int(response.get("status") != "ok")
+            self.last_ms = (time.time() - began) * 1000
+            self.log.append("{}  {}  {}  {:.1f} ms".format(
+                time.strftime("%H:%M:%S"), name, response.get("status"), self.last_ms))
+        return response
+
+    def _dispatch(self, raw):
         request_id = None
         try:
             request = json.loads(raw.decode("utf-8"))
@@ -1312,7 +1337,19 @@ def stop():
 
 def initializePlugin(plugin):  # noqa: N802 - Maya naming
     start()
+    if not cmds.about(batch=True):
+        try:
+            import mia_mcp_ui
+            mia_mcp_ui.bind(start, lambda: _server)
+        except ImportError:
+            pass  # Load-once installations do not include the optional UI.
 
 
 def uninitializePlugin(plugin):  # noqa: N802 - Maya naming
+    if not cmds.about(batch=True):
+        try:
+            import mia_mcp_ui
+            mia_mcp_ui.cleanup()
+        except ImportError:
+            pass
     stop()

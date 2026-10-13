@@ -33,7 +33,7 @@ global proc shelf_miamcp () {
         -style "iconOnly"
         -marginWidth 0
         -marginHeight 1
-        -command "import maya.cmds as cmds\nif \"maya_mcp_plugin\" not in (cmds.pluginInfo(query=True, listPlugins=True) or []):\n    cmds.loadPlugin(\"maya_mcp_plugin.py\")\nelse:\n    print(\"[maya-mcp] Bridge plug-in is already loaded.\")\n"
+        -command "import maya.cmds as cmds\nif \"maya_mcp_plugin\" not in (cmds.pluginInfo(query=True, listPlugins=True) or []):\n    cmds.loadPlugin(\"maya_mcp_plugin.py\")\nimport mia_mcp_ui\nmia_mcp_ui.start_server()\n"
         -sourceType "python"
         -commandRepeatable 1
         -flat 1

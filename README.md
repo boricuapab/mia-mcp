@@ -7,7 +7,7 @@ An MCP server for **Autodesk Maya**, modelled on the [Blender MCP server](https:
 ## How it works
 
 ```
- MCP client (Claude / Codex)  <--stdio-->  maya-mcp server  <--TCP 127.0.0.1:9877-->  Maya plug-in
+ MCP client (Claude / Codex)  <--stdio-->  maya-mcp server  <--TCP 127.0.0.1:8675-->  Maya plug-in
                                            (src/maya_mcp)                              (maya_plugin/maya_mcp_plugin.py)
 ```
 
@@ -33,6 +33,13 @@ Pick one:
   the installer again updates the existing server button without removing other
   shelf buttons. The button uses Maya's plug-in search path, so no user-specific
   paths need editing. Keep `install.py`, `maya_plugin/`, and `icons/` together.
+  The **mia-mcp** menu provides **Start Server**, **Server Log and Stats**, and
+  **Load / Auto load Preferences**. The shelf and menu use the same bridge.
+  The status window refreshes every second with endpoint, uptime, request/error
+  counts, request duration, and the most recent 200 request log entries.
+  In Maya's Plug-in Manager, find `maya_mcp_plugin.py` and use **Loaded** and
+  **Auto load** to control loading and startup. To update an already-loaded
+  plug-in after reinstalling, unload and reload it in Plug-in Manager.
   Alternatively, run in Maya's Python Script Editor:
   ```python
   import runpy
@@ -45,7 +52,7 @@ Pick one:
   ```
 - **Permanent:** copy `maya_mcp_plugin.py` into a folder on `MAYA_PLUG_IN_PATH` (e.g. `~/maya/<version>/plug-ins/`), then enable it in **Windows > Settings/Preferences > Plug-in Manager** and tick **Auto load**.
 
-The Script Editor prints `[maya-mcp] listening on 127.0.0.1:9877`. Unloading the plug-in stops the server.
+The Script Editor prints `[maya-mcp] listening on 127.0.0.1:8675`. Unloading the plug-in stops the server.
 
 ## 2. Install the MCP server
 
@@ -105,7 +112,7 @@ Set these in the MCP client's `env` for the server, and (for `MAYA_MCP_PORT` / `
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAYA_MCP_PORT` | `9877` | Bridge port |
+| `MAYA_MCP_PORT` | `8675` | Bridge port |
 | `MAYA_MCP_HOST` | `127.0.0.1` | Where the server looks for Maya (the plug-in only ever binds to localhost) |
 | `MAYA_MCP_TOKEN` | unset | Shared secret; if set in Maya, requests without it are rejected |
 | `MAYA_MCP_TIMEOUT` | `60` | Seconds to wait for Maya to answer |

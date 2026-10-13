@@ -97,6 +97,8 @@ def test_protocol():
     server.start()
     try:
         check("ping", send_command("ping")["pong"] is True)
+        check("server stats count requests", server.requests == 1 and server.errors == 0)
+        check("server stats record latency and log", server.last_ms >= 0 and "ping" in server.log[-1])
 
         r = send_command("execute_python", {"code": "x = 21\nprint('hi')\nx * 2"})
         check("execute_python stdout + last expr", r["stdout"].strip() == "hi" and r["result"] == "42")
@@ -126,6 +128,10 @@ def test_protocol():
             check("unknown command raises", False)
         except MayaError as e:
             check("unknown command lists available", "Available" in str(e))
+        check("server stats count errors", server.errors == 2)
+        for _ in range(205):
+            server.dispatch(b'{"type":"ping"}')
+        check("server log is bounded", len(server.log) == 200)
     finally:
         server.stop()
 
